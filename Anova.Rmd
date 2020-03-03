@@ -1,0 +1,714 @@
+---
+title: "Estimation of the latitude & the longitude (ANOVA)"
+author: "Lesueur Louis"
+output:
+  html_notebook: default
+  pdf_document: default
+---
+```{r,echo=FALSE}
+#knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r,warning=FALSE,echo=FALSE,message=FALSE, include=FALSE}
+rm(list=ls())
+
+#print('>>>>>>packages>>>>>>')
+require(stringr)
+require(readxl)
+require(maps)
+require(MASS)
+require(glmnet)
+require(mda)
+require(polspline)
+source('Useful_methods.R')
+#print('<<<<<<packages<<<<<<')
+```
+# Préparation des données
+
+```{r,warning=FALSE}
+
+# #Import des donnees
+#print('>>>>>>data>>>>>')
+ALL_COMMUNES <- read_excel("COMMUNES.xlsx", col_types = c("blank","text", "blank", "text", "numeric", "numeric", "blank", "blank", "numeric", "text", "blank"))
+#print('<<<<<<<data<<<<<')
+
+# #Preparation des donnees
+#print('>>>>>>>values>>>>>>')
+
+C<-180/pi #Constante de renormalisation degres/radians
+
+#Separation des tests/app databases
+n<-36209 #number of cities in the database
+set.seed(322)
+test_COMMUNES_id<-sample((1:n),size=3620,replace=F)
+test_COMMUNES<-ALL_COMMUNES[test_COMMUNES_id,1:6]
+COMMUNES<-ALL_COMMUNES[-test_COMMUNES_id,]
+
+# #Pour les minuscules
+# test_COMMUNES$nom<-tolower(test_COMMUNES$nom)
+# COMMUNES$nom<-tolower(COMMUNES$nom)
+p=c('a','z','e','r','t','y','u','i','o','p','q','s','d','f','g','h','j','k','l','m','w','x','c','v','b','n','é','-','è','_','ç','à','ê','ô','ë','ÿ','î','â','û','ü','A','Z','E','R','T','Y','U','I','O','P','Q','S','D','F','G','H','J','K','L','M','W','X','C','V','B','N') 
+# #Lettres minuscules+majuscules+accentues+caracteres speciaux
+
+logistic_table=logistic_table.initialization_basic(p,COMMUNES)
+logistic_table_test<-logistic_table.initialization_basic(p,test_COMMUNES)
+# p2=c('?','?','k','j','w','?','?','?','?','?','?','?','?')
+# p3=c('a','z','e','r','t','y','u','i','o','p','q','s','d','f','g','h','l','m','x','c','v','b','n','?','-','?','_')
+#print('>>>>>>values>>>>>>')
+```
+
+# Statistiques Univariées
+
+## Représentation des données
+
+```{r, warning=FALSE}
+#plot(test_COMMUNES$longitude, test_COMMUNES$latitude)
+
+map('france')
+points(C*ALL_COMMUNES$longitude,C*ALL_COMMUNES$latitude,pch='.')
+```
+Les villes ne sont pas uniformément placées sur la carte; ce qui est assez représentatif de la réalité.
+
+Pas de points en Corse.
+
+## Analyse Univariée de la latitude et de la longitude
+
+```{r}
+summary(as.data.frame(list(latitude=ALL_COMMUNES$latitude,longitude=ALL_COMMUNES$longitude)))
+```
+
+
+## Analyse Univariée des noms des villes selon la présence de caractères
+
+Regardons d'abord les fréquences d'apparition de chaque caractère dans les noms de ville:
+
+```{r}
+summary(logistic_table)
+```
+Les lettres rares sont: j,k,w,ç,à,ê,ô,ë,ÿ,î,â,û,ü,Z,Y,U,I,Q,K,W,X
+
+## Placement des villes selon la présence de caractères
+```{r}
+p2=c('a','z','e','r','t','y','u','i','o','p','q','s','d','f','g','h','l','m','w','x','c','v','b','n','é','-','è','_','A','E','R','T','O','P','S','D','F','G','H','J','L','M','C','V','B','N') #common letters
+p3=c('j','k','w','à','ê','ô','ë','ÿ','î','â','û','ü','Z','Y','U','I','Q','K','W','X') #rare letters
+
+#print('First the rare letters')
+#par(mfrow=c(2,2))
+for(i in p3){
+  tmp=(1:length(logistic_table[,1]))*logistic_table[,i]
+  map('france')
+  points(C*COMMUNES$longitude[tmp],C*COMMUNES$latitude[tmp],main=i,col='blue',pch='o')
+  points(C*COMMUNES$longitude[-tmp],C*COMMUNES$latitude[-tmp],pch='.')
+  title(main=i)
+}
+
+#print('<<<<<<<<<<')
+#print('Then the others')
+for(i in p2){
+  tmp=(1:length(logistic_table_test[,1]))*logistic_table_test[,i]
+  map('france')
+  points(C*test_COMMUNES$longitude[tmp],C*test_COMMUNES$latitude[tmp],main=i,pch='o',col='blue')
+  points(C*COMMUNES$longitude[-tmp],C*COMMUNES$latitude[-tmp],pch='.')
+  title(main=i)
+}
+
+
+rm(list=c('i','tmp','p2','p3'))
+#print('<<<<<<<<<<<')
+```
+Les lettres avec une tendance particulière sont: j,k,w,ê,ô,ÿ,Z,K,W.
+
+On remarque que les tendances remarquables:
+
+- Se situent dans les Hautes-De-France la Lorraine et l'Alsace: importance des langues germaniques?
+
+- Arrivent avec les lettres les plus rares.
+
+# Statistiques Bivariées
+
+## Création du modéle régulier
+
+```{r}
+#print('>>>>>>>>>values>>>>>>>')
+# #Ajout de modalites
+logistic_table<-logistic_table.initialization(p,COMMUNES)
+logistic_table_test<-logistic_table.initialization(p,test_COMMUNES)
+# #Attention au - t au _
+p2=c('a','z','e','r','t','y','u','i','o','p','q','s','d','f','g','h','j','k','l','m','w','x','c','v','b','n','é','tiret','è','underscore','ç','à','ê','ô','ë','ÿ','î','â','û','ü','A','Z','E','R','T','Y','U','I','O','P','Q','S','D','F','G','H','J','K','L','M','W','X','C','V','B','N')
+
+#Initialisation des data frames pour les lm et des noms des variables
+latitude.lm.data<-data.lm(logistic_table,COMMUNES$latitude,p)
+longitude.lm.data<-data.lm(logistic_table,COMMUNES$longitude,p)
+colnames(logistic_table)<-p2
+colnames(logistic_table_test)<-p2
+colnames(latitude.lm.data)<-c('latitude',p2)
+colnames(longitude.lm.data)<-c('longitude',p2)
+
+#Formule des lm
+formule_lat_reg<-formula(paste("latitude ~ ", paste(p2, collapse= "+")))
+formule_long_reg<-formula(paste("longitude~",paste(p2,collapse="+")))
+#print('<<<<<<<<<<<<<<<')
+
+#print('>>>>>>>>creating model for the latitude>>>>>>>>')
+latitude.lm_reg=lm(formule_lat_reg,data=latitude.lm.data)
+#print('<<<<<<<<<<<<<<<')
+#print('>>>>>>>>creating the model for longitude>>>>>>>')
+longitude.lm_reg=lm(formule_long_reg,data=longitude.lm.data)
+#print('<<<<<<<<<<<<<<<<<<<')
+```
+Remarquons qu'on a ajouté maintenant le nombre d'apparitions des lettres par nom de ville.
+
+ex: strasbourg->['a'=1,'s'=3,'r'=2,'t'=1,'b'=1,'o'=1,'u'=1,'g'=1,0...0]
+
+## Analyse bivariée et Modèle Singulier
+
+### Fischer tests pour la Latitude
+
+Pour faire une première sélection des variables avant l'ajout d'interactions; essayons de repérer les variables significatives sur la latitude.
+
+```{r}
+latanova<-anova(latitude.lm_reg)
+latanova
+```
+D'après les tests précédents les variables semblant avoir de l'influence sur la latitude sont:
+
+- 0: a z e r y u i o p s d f g h j k l m v  n é è _ ë A Z E U P S F H K L W C V 
+
+- <1%: B I J
+
+- <5%: â ü T
+
+### Fischer tests pour la longitude
+
+```{r}
+longanova<-anova(longitude.lm_reg)
+longanova
+```
+Les lettres significatives:
+
+- 0: a e t y u i q s d f h k m w x b n é – è _ ô ë A Z E R T Y P Q S D G H J L M W X C V B N
+
+- <1% : l I K
+
+- <5%: o c F
+
+### Conclusion
+
+On remarque finalement que la plupart des lettres semble effectivement (beaucoup de p-values à 0) avoir un effet très significatif sur la latitude et la longitude.
+
+Les lettres rares ne sont les seules à être vraiment importantes: les lettres très fréquentes (comme le a) aussi: c'est peut-être leur absence ou le fait qu'il y ait plusieurs occurences de ces lettres.
+
+## Vérifications graphiques des hypothéses du modèle
+
+### Latitude
+```{r}
+par(mfrow=c(2,2))
+plot(latitude.lm_reg)
+```
+**Residuals vs fitted:** Nous ne sommes pas sensés observer une tendance particulière mais ici nous voyons bien une tendance (décroissante); l'éspérance des résidus n'est pas nulle.
+
+**QQ-plot:** La latitude ne semble pas suivre une loi normale (on aurait pu s'y attendre...)
+
+**Scale Location:** Quelques points un peu extrêmes mais nous ne voyons pas de tendance particulière.
+
+**Residuals vs leverage** Quelques points sont très loins sur la droite. Si aucun point ne semble abérant il y a l'air d'y avoir un effet de classes.
+ 
+Voyons quelques points suspects:
+```{r}
+COMMUNES[23295,]
+COMMUNES[20802,]
+COMMUNES[22265,]
+```
+ Effectivement ces noms de villes ont de nombreux caractères rares et sont extrèmes en ce sens...
+
+### Longitude:
+
+```{r}
+par(mfrow=c(2,2))
+plot(longitude.lm_reg)
+```
+
+On peut faire à peu près les mêmes remarques que pour les graphes de la latitude.
+Pour les **residuals vs fitted** et **scale-location** une tendance plus forte que pour la latitude semble resortir.
+
+Regardons quelques points ayant eu un fort leverage:
+```{r}
+print(COMMUNES[2174,])
+print(COMMUNES[23496,])
+print(COMMUNES[13972,])
+
+```
+Effectivement les noms qui resortent ne sont pas les plus banals...
+
+## Tentative d'amélioration du modéle régulier
+
+### Estimation de la log-longitude et de la log-latitude
+
+On va utiliser la bijection suivante:
+
+$f:x->sign(x)exp(log(|x|))$
+
+```{r}
+#print('>>>>>>>Values>>>>>>>')
+# #Log-longitude
+sign.longitude<-sign(longitude.lm.data[,1])
+loglongitude.lm.data<-longitude.lm.data
+loglongitude.lm.data[,1]<-log(abs(longitude.lm.data[,1]))
+colnames(loglongitude.lm.data)<-c('loglongitude',p2)
+formule_loglong_reg<-formula(paste('loglongitude~',paste(p2,collapse='+')))
+# #Log-latitude
+sign.latitude<-sign(latitude.lm.data[,1])
+loglatitude.lm.data<-latitude.lm.data
+loglatitude.lm.data[,1]<-log(abs(latitude.lm.data[,1]))
+colnames(loglatitude.lm.data)<-c('loglatitude',p2)
+formule_loglat_reg<-formula(paste('loglatitude~',paste(p2,collapse='+')))
+#print('<<<<<<<<values<<<<<<<<')
+#print('>>>>>>>models>>>>>>>>>')
+loglongitude.lm=lm(formule_loglong_reg,data=loglongitude.lm.data)
+loglatitude.lm=lm(formule_loglat_reg,data=loglatitude.lm.data)
+#print('<<<<<<<<models<<<<<<<<')
+```
+
+Nous allons regarder les graphes de diagnostiques de ces nouveaux modèles linéaires pour voir si l'étude des log-longitudes et log-latitudes par des lois gaussiennes a plus de sens.
+
+```{r}
+#print('loglatitude:')
+par(mfrow=c(2,2))
+plot(loglatitude.lm)
+#print('loglongitude')
+par(mfrow=c(2,2))
+plot(loglongitude.lm)
+```
+### Estimation de la sqrt-longitude et de la sqrt-latitude
+
+On va utiliser la bijection suivante:
+
+$f:x->sign(x)\sqrt{|x|}$
+
+```{r}
+#print('>>>>>>>>>>>>values>>>>>>>>>>>')
+# #sqrt-longitude
+sqrtlongitude.lm.data<-longitude.lm.data
+sqrtlongitude.lm.data[,1]<-sqrt(abs(longitude.lm.data[,1]))
+colnames(sqrtlongitude.lm.data)<-c('sqrtlongitude',p2)
+formule_sqrtlong_reg<-paste('sqrtlongitude~',paste(p2,collapse='+'))
+# #sqrt-latitude
+sqrtlatitude.lm.data<-latitude.lm.data
+sqrtlatitude.lm.data[,1]<-sqrt(abs(latitude.lm.data[,1]))
+colnames(sqrtlatitude.lm.data)<-c('sqrtlatitude',p2)
+formule_sqrtlat_reg<-paste('sqrtlatitude~',paste(p2,collapse='+'))
+# #We have already caught the sign of the latitude and the longitude
+#print('<<<<<<<<<<<<<values<<<<<<<<<<')
+#print('>>>>>>>>>>>>>>models<<<<<<<<<<<<')
+sqrtlongitude.lm=lm(formule_sqrtlong_reg,data=sqrtlongitude.lm.data)
+sqrtlatitude.lm=lm(formule_sqrtlat_reg,data=sqrtlatitude.lm.data)
+#print('<<<<<<<<models<<<<<<<')
+```
+
+Regardons de même les graphes de diagnostique:*
+
+```{r}
+par(mfrow=c(2,2))
+#print('sqrt latitude')
+plot(sqrtlatitude.lm)
+#print('sqrt longitude')
+plot(sqrtlongitude.lm)
+```
+
+### Conclusion:
+
+Les fonctions les plus communes appliquées à la latitude et la longitude ne donnent pas des données ayant l'air de suivre les hypothèses du modéle linéaire gaussien.
+
+Cela a même l'air d'être pire: les tendances/leverage/qq-plot ressemblent encore moins à des droites
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#print('>>>>>throw useless variables>>>>>>>')
+rm(list=c('sign.latitude','sign.longitude','loglatitude.lm','loglongitude.lm','loglatitude.lm.data','loglongitude.lm.data','sqrtlatitude.lm','sqrtlongitude.lm','sqrtlatitude.lm.data','sqrtlongitude.lm.data','formule_loglat_reg','formule_loglong_reg','formule_sqrtlat_reg','formule_sqrtlong_reg'))
+#print('<<<<<<<<<<<<<<<<<<<<<<<<<')
+```
+
+## Sélection des variables
+
+Procédure anova1: on fait les tests bivariés d'influence sur les variables d'intérêt et on garde les covariables dont les tests ont une p-values sont <5%.
+
+Attention néanmoins aux tests multiples (avec 5% d'erreur par test à 20 tests on fait 100% d'erreur finalement).
+
+```{r}
+#Procedure anova1 classique
+#Variables significatives
+lat_selec_anova<-rownames(latanova[which(latanova[,5]<5/100),])
+long_selec_anova<-rownames(longanova[which(longanova[,5]<5/100),])
+
+#Creation des modeles
+latitude.lm_reg_anova<-lm(formula(paste('latitude~',paste(lat_selec_anova,collapse='+'))),data=latitude.lm.data)
+longitude.lm_reg_anova<-lm(formula(paste('longitude~',paste(lat_selec_anova,collapse='+'))),data=longitude.lm.data)
+```
+
+### AIC et BIC
+
+Pour les autres sélections des variables (BIC/AIC/R2) on ne pourra pas faire de procédure exhaustive; le nombre de covariables êtant >20 les temps de calcul deviennent inenvisageables.
+
+On tentera donc une procédure de type backward.
+
+```{r eval=FALSE, include=FALSE}
+#Procedure exhaustive
+lat_selec_reg<-regsubsets(formule_lat_reg,data=latitude.lm.data,nvmax=NULL,really.big=TRUE)
+long_selec_reg<-regsubsets(formule_lat_reg,data=latitude.lm.data,nvmax=NULL,really.big=TRUE)
+
+#Graphiques
+par(nfrow=c(2,2))
+plot(lat_selec_reg,scale='bic')
+plot(lat_selec_reg,scale='adjr2')
+plot(lat_selec_reg,scale='r2')
+plot(lat_selec_reg,scale='aic')
+
+
+```
+
+```{r}
+#Procedures backward
+
+#AIC
+latitude.lm_reg_aic<-stepAIC(latitude.lm_reg,formule_lat_reg,data=latitude.lm.data,direction="backward",trace=FALSE)
+longitude.lm_reg_aic<-stepAIC(longitude.lm_reg,formule_long_reg,data=longitude.lm.data,direction="backward",trace=FALSE)
+
+#BIC
+latitude.lm_reg_bic<-stepAIC(latitude.lm_reg,formule_lat_reg,data=latitude.lm.data,direction="backward",trace=FALSE,k=log(length(latitude.lm.data[,1])))
+longitude.lm_reg_bic<-stepAIC(longitude.lm_reg,formule_long_reg,data=longitude.lm.data,direction="backward",trace=FALSE,k=log(length(longitude.lm.data[,1])))
+```
+
+### Calcul des erreurs sur la base de Test
+
+Pour comparer les performances de ces différents modèles nous allons les tester en prédisant avec la base de tests les latitudes/longitudes des villes de la base de tests, calculer les erreurs quadratiques des prévisions et sélectionner celui minimisant l'erreur quadratique; ce sera le modèle de régression (sans interactions) faisant le meilleur score d'apprentissage.
+
+```{r}
+#Creation des databases
+
+#logistic_table_test<-logistic_table.initialization(p,test_COMMUNES)
+test.latitude<-data.lm(logistic_table_test,test_COMMUNES$latitude,p)
+test.longitude<-data.lm(logistic_table_test,test_COMMUNES$longitude,p)
+colnames(test.latitude)<-c('latitude',p2)
+colnames(test.longitude)<-c('longitude',p2)
+
+#Calcul des erreurs
+
+#MODELE COMPLET
+err_complete<-c(mean((predict(latitude.lm_reg,newdata=test.latitude)-test.latitude[,1])**2),mean((predict(longitude.lm_reg,newdata=test.longitude)-test.longitude[,1])**2))
+#ANOVA
+err_anova<-c(mean((predict(latitude.lm_reg_anova,newdata=test.latitude)-test.latitude[,1])**2),mean((predict(longitude.lm_reg_anova,newdata=test.longitude)-test.longitude[,1])**2))
+#AIC
+err_aic<-c(mean((predict(latitude.lm_reg_aic,newdata=test.latitude)-test.latitude[,1])**2),mean((predict(longitude.lm_reg_aic,newdata=test.longitude)-test.longitude[,1])**2))
+#BIC
+err_bic<-c(mean((predict(latitude.lm_reg_bic,newdata=test.latitude)-test.latitude[,1])**2),mean((predict(longitude.lm_reg_bic,newdata=test.longitude)-test.longitude[,1])**2))
+
+```
+
+```{r}
+#Resultats
+M<-matrix(nrow=5,ncol=2)
+M[1,]<-err_complete
+M[2,]<-err_anova
+M[3,]<-err_aic
+M[4,]<-err_bic
+M[5,]<-c(var(test_COMMUNES$latitude),var(test_COMMUNES$longitude))
+rownames(M)<-c('Modele complet','Modele avec anova type 1', 'Modele AIC backward','Modele BIC backward','Modele trivial')
+colnames(M)<-c('Erreur sur la latitude','Erreur sur la longitude')
+M
+```
+
+Le modele complet semble être le meilleur en prédiction (et il est certainement le meilleur aussi sur la base d'APP).
+Ceci dit la différence n'est pas flagrante et quand on regarde le nombre de régresseurs
+Latitude:66/56/46/44
+Longitude:66/56/45/41
+Le gain de 25 variables par changement de modèle sans impact sur l'erreur d'apprentissage est à prendre en compte!
+
+```{r include=FALSE}
+rm(list=c('latanova','longanova','err_aic','err_anova','err_bic','err_complete','lat_selec_anova','long_selec_anova','formule_lat_reg','formule_long_reg','lat_selec_anova','long_selec_anova'))
+```
+
+# Création du modèle singulier avec 1 niveau d'interaction
+
+Dans cette partie nous regarderons la présence simultanée de 2 lettres (nous ajoutons 1 niveau d'interaction). C'est à dire:
+
+$latitude(Dax)=intercept+\beta_{D}+\beta_{a}+\beta_{x}+\gamma_{D,a}+\gamma_{a,x}+\gamma_{D,x}+\epsilon_{Dax}$
+
+```{r}
+# #Creation des formules des modeles singuliers avec 1 niv d'interaction
+formule_latitude<-formula(paste(paste('latitude~(',paste(p2,collapse='+')),')^2'))
+formule_longitude<-formula(paste(paste('longitude~(',paste(p2,collapse='+')),')^2'))
+
+# #Creation des modeles singuliers
+#print('>>>>>>>Singular Models>>>>>>>>>>')
+latitude.lm<-lm(formule_latitude,data=latitude.lm.data)
+longitude.lm<-lm(formule_longitude,data=longitude.lm.data)
+#print('<<<<<<<<<<<<<<<<<<<<')
+```
+## Informations sur les Modeles:
+
+```{r,warning=FALSE,message=FALSE}
+#Latitude
+summary(latitude.lm)
+#Longitude
+summary(longitude.lm)
+```
+
+**A propos des régresseurs** On remarque qu'il y a beaucoup de régresseurs ps non nuls (c'est à dire avec des tests de nullité avec une p-value au moins <5%) le modèle est donc très gros. La selection des variables risque aussi d'être compliquée à cause de la taille des modèles.
+
+**A propos des R2** on obtient les scores 18% pour la longitude et 20% pour la latitude. Ce serait assez faible dans le cadre modèle gaussien mais c'est très intéressant pour notre sujet de remarquer qu'avec des modèles simples et faux on arrive quand même à expliquer environ 1/5 de la variabilité des positions des villes juste à partir de leur nom.
+
+**A propos de la statistique de Fischer** on obtient une p-value de pertinence du modèle proche de 0 c'est à dire que ps la présence d'au moins un des caractères étudiés é un impact sur la latitude (resp. longitude) des villes en France: c'est très encourageant!
+
+**A propos des NA** Ils viennent sans doute du fait que nous avons considéré des interactions qui n'existent pas. Il est possible qu'aucune ville n'ait à la fois les lettres a et ü dans leu nom (les NA sont les mêmes pour la latitude et la longitude). Il serait pertinent de ne pas regarder alors ces interactions...
+
+## Graphes de diagnostiques
+
+```{r message=FALSE, warning=FALSE}
+#print('Latitude:')
+par(mfrow=c(2,2))
+plot(latitude.lm)
+
+#print('Longitude:')
+par(mfrow=c(2,2))
+plot(longitude.lm)
+```
+
+Il est à noter que l'ajout d'interactions à grandement améliorer les hypothèses des ML gaussiens aussi bien pour la latitude que la longitude.
+
+## Selection des variables: anova1/bonferonni
+
+Il devient impensable avec nos modèles à environ 2000 covariables de faire de la sélection de variables via AIC ou BIC (même avec des procédure de type backward ou forward).
+
+Nous allons donc appliquer une procédure de type bonferronni-Holm qui est plus puissante que Bonferroni simple et ne requiert pas d'hypothèses partiticulières sur la structure et l'indépendance des tests.
+
+```{r}
+#Latitude
+latanova<-anova(latitude.lm)
+latanova
+#Longitude
+longanova<-anova(longitude.lm)
+longanova
+```
+### Selection des variables:procedure anova (de type 1)
+
+Voici ici la procédure de séléction de variables 'brutale' (ie sans ajustement du niveau des tests).
+
+```{r}
+#Recuperation des variables significatives
+lat_selec<-rownames(latanova[which(latanova[,5]<5/100),])
+long_selec<-rownames(longanova[which(longanova[,5]<5/100),])
+#Nouvelles formules
+formule_lat_selec<-paste("latitude~",paste(lat_selec,collapse='+'))
+formule_long_selec<-paste("longitude~",paste(long_selec,collapse='+'))
+#Nouveaux ML
+latitude.lm2<-lm(formule_lat_selec,data=latitude.lm.data)
+longitude.lm2<-lm(formule_long_selec,data=longitude.lm.data)
+```
+
+On réduit les modéles à environ 400 covariables pour la latitude et pour la longitude.
+
+<!-- ### Bonferroni-Holm -->
+
+<!-- Pour plus de détails: -->
+<!-- https://en.wikipedia.org/wiki/Holm%E2%80%93Bonferroni_method -->
+
+<!-- On a enlevé toutes les p-values non significatives on va maintenant affiner le modèle. -->
+
+```{r eval=FALSE, include=FALSE}
+bonferonni_aic<-function(INPUT=latitude.lm2,X=latitude.lm.data){
+  
+  latitude<-INPUT
+  
+  latanova<-anova(latitude)
+  sorted_latanova<-order(latanova[,5])
+  
+  print(length(sorted_latanova))
+  
+  latitude_aic<-numeric(length(sorted_latanova))  
+  
+  #print('>>>>>>>>>>>>boucle>>>>>>>>>>')
+  
+  for(i in (1:length(sorted_latanova)-1)){
+    selec<-sorted_latanova[1:i]
+    #print(length((1:i))/length(sorted_latanova)*100)
+    lat_selec<-rownames(latanova[selec,])
+    tmp_formula<-paste(paste("latitude~",paste(lat_selec,collapse='+')))
+    tmp_lm<-lm(tmp_formula,data=X)
+    latitude_aic[i]<-AIC(tmp_lm)
+    #print(tmp_formula)
+  }
+  
+  #print('<<<<<<<<<<<<<<<<<<<<<boucle<<<<<<<<<<<')
+  
+  plot((1:length(sorted_latanova)),latitude_aic)
+  
+  OUTPUT_selec<-sorted_latanova[1:which.min(latitude_aic)]
+  OUTPUT_formula<-paste(paste("latitude~",paste(OUTPUT_selec,collapse='+')))
+  return(lm(OUTPUT_formula,data=X))
+}
+```
+
+```{r eval=FALSE, include=FALSE}
+latitude.lm3<-bonferonni_aic(latitude.lm2)
+longitude.lm3<-bonferonni_aic(longitude.lm2)
+```
+
+## Calcul des erreurs
+
+```{r message=FALSE,warning=FALSE}
+M2<-matrix(nrow=2,ncol=2)
+M2[1,]<-c(mean((test_COMMUNES$latitude-predict(latitude.lm,test.latitude))**2),mean((test_COMMUNES$longitude-predict(longitude.lm,test.longitude))**2))
+M2[2,]<-c(mean((test_COMMUNES$latitude-predict(latitude.lm2,test.latitude))**2),mean((test_COMMUNES$longitude-predict(longitude.lm2,test.longitude))**2))
+rownames(M2)<-c('Modele singulier','Modele singulier anova de type1')
+colnames(M2)<-c('latitude','longitude')
+M2
+```
+
+```{r}
+M<-rbind(M,M2)
+rm(list=c('latanova','longanova','M2','formule_lat_selec','formule_latitude','formule_long_selec','formule_longitude','lat_selec','long_selec'))
+```
+
+
+# Penalisation Elastic-net
+
+```{r}
+#Creation du modele
+out.lasso_lat<-glmnet(logistic_table,COMMUNES$latitude)
+l_lat=length(out.lasso_lat$lambda)
+b_lat=coef(out.lasso_lat)[-1,1:l_lat]
+
+out.lasso_long<-glmnet(logistic_table,COMMUNES$longitude)
+l_long=length(out.lasso_long$lambda)
+b_long=coef(out.lasso_long)[-1,1:l_long]
+```
+
+```{r}
+#Visualisation des coefficients
+matplot(t(as.matrix(out.lasso_lat$beta)),type="l",col=1:10,lty=1:3)
+legend("topleft",legend=colnames(logistic_table),col=1:10,lty=1:3)
+title("lasso latitude")
+
+matplot(t(as.matrix(out.lasso_long$beta)),type="l",col=1:10,lty=1:3)
+legend("topleft",legend=colnames(logistic_table),col=1:10,lty=1:3)
+title("lasso longitude")
+```
+Les paramètres ont correctement convergé.
+
+## Choix de la penalité par validation croisée
+
+```{r}
+latitude.app=as.matrix(COMMUNES$latitude)
+a_lat=cv.glmnet(logistic_table,latitude.app)
+lambda.opt_lat=a_lat$lambda.min
+latitude.lm.lasso=glmnet(logistic_table,latitude.app,lambda=lambda.opt_lat)
+
+longitude.app=as.matrix(COMMUNES$longitude)
+a_long=cv.glmnet(logistic_table,longitude.app)
+lambda.opt_long=a_long$lambda.min
+longitude.lm.lasso=glmnet(logistic_table,longitude.app,lambda=lambda.opt_long)
+
+```
+
+## Calcul de l'erreur quadratique du modèle.
+
+```{r}
+#Erreur sur la base de tests
+err_lasso<-matrix(c(mean((test_COMMUNES$latitude-predict.glmnet(latitude.lm.lasso,logistic_table_test,s=lambda.opt_lat))^2),mean((test_COMMUNES$longitude-predict.glmnet(longitude.lm.lasso,logistic_table_test,s=lambda.opt_long))^2)),nrow=1)
+
+#err_lasso
+
+rownames(err_lasso)<-c('Modele Lasso avec lambda opt')
+M<-rbind(M,err_lasso)
+M
+```
+On voit que la relaxation des paramètres est moins importante en fait que l'ajout d'interactions.
+
+Il serait donc intéressant de regarder des syllabes plutôt que les présences/absences de paramètres.
+
+```{r warning=FALSE, include=FALSE}
+rm(list=c('a_lat','a_long','b_lat','b_long','cities_app','cities_test','cities_test_estim','latitude.lm.data','latitude.lasso','longitude.lasso','longitude.lm.data','out.lasso_lat','out.lasso_long','test.latitude','test.longitude','l_lat','l_long','lambda.opt_lat','lambda.opt_long','err_lasso','latitude.app','longitude.app'))
+```
+
+
+# Regression multivariée : MARS
+
+https://www.rdocumentation.org/packages/polspline/versions/1.1.17/topics/polymars
+
+https://cran.r-project.org/web/packages/polspline/polspline.pdf
+
+Le modèle MARS: 
+
+1. N'estime pas indépendamment la latitude et la longitude.
+
+2. Ne repose pas sur une hypothèse de lnéarité des paramètres.
+
+Pour chaque ville i de coordonnées $(longitude_{i},latitude_{i})$:
+
+La fonction de régression sera de la forme:
+
+$f(X):=\sum_{i=1}^{k}c_{i}B_{i}(X_{i})$ avec:
+
+-X la matrice de données définie précédemment.
+
+-les $c_{i}$ constantes
+
+-les $B_{i}$ êtant soit des fonctions constantes/ soit des fonctions de la forme 'hinge' $max(X_{i}-cste,0)$ soit un produit de 'hinge functions'
+
+
+```{r}
+cities_app<-matrix(nrow=length(COMMUNES$latitude),ncol=2)
+cities_app[,2]<-COMMUNES$longitude
+cities_app[,1]<-COMMUNES$latitude
+Ll.mars<-polymars(responses = cities_app,predictors = logistic_table,factors=TRUE)
+```
+
+## Graphe de diagnostique:
+
+```{r}
+plot(fitted(Ll.mars),residuals(Ll.mars))
+```
+
+```{r}
+cities_test_estim<-predict.polymars(object=Ll.mars,x=logistic_table_test )
+cities_test<-matrix(nrow=length(test_COMMUNES$latitude),ncol=2)
+cities_test[,1]<-test_COMMUNES$latitude
+cities_test[,2]<-test_COMMUNES$longitude
+err_mars<-matrix(c(mean((cities_test_estim[,1]-cities_test[,1])**2),mean((cities_test_estim[,2]-cities_test[,2])**2)),nrow=1)
+rownames(err_mars)<-c('Modele MARS')
+M<-rbind(M,err_mars)
+M
+```
+
+Le modèle linéaire où on a relâché l'hypothèse d'indépendance fait à peu près aussi bien que les modèles linéaires précédents.
+
+```{r warning=FALSE, include=FALSE}
+rm(list=c('cities_app','cities_test','cities_test_estim','err_mars'))
+```
+
+# Choix du modele et selection des individus
+
+On choisirait plutôt le modèle singulier avec sélections des variables via anova1
+
+Regardons les villes (de la base de test) les mieux/moins bien placées (au sens de l'erreur quadratique)
+
+```{r}
+
+#TOP20 latitude
+colnames(logistic_table_test)<-p2
+latitude.err<-(test_COMMUNES$latitude-predict(latitude.lm2,as.data.frame(logistic_table_test)))**2
+top20.lat<-order(latitude.err)[1:20]
+test_COMMUNES[top20.lat,]
+
+#TOP20 longitude
+longitude.err<-(test_COMMUNES$longitude-predict(longitude.lm2,as.data.frame(logistic_table_test)))**2
+top20.long<-order(longitude.err)[1:20]
+test_COMMUNES[top20.long,]
+
+#TOP
+Ll.err<-sqrt(latitude.err+longitude.err)
+top20.Ll<-order(Ll.err)[1:20]
+test_COMMUNES[top20.Ll,]
+
+```
+Il est intéressant de noter que les ville les mieux placées aussi bien pour la longitude; la latitude ou les 2 jointement il n'y a pas spécialement de points communs sur les villes les mieux placées. Elles ne sont pas dans la même région ni proches du centre. En revanche elles rappellent les villes ayant l'air d'avoir eu un fort leverage: leurs coordonnées sont sans doutes estimées par elles-mêmes. Ces villes ont ainsi une combinaison de modalités unique.

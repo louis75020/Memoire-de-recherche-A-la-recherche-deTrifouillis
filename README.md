@@ -14,3 +14,5 @@ Useful_methods.R: module pour les modèles linéaires
 RegLogisticRegRF: Régression logistique et Random forests de régression
 
 Random_Forest_lev: forêts aéatoires avec médianes des distances de levenshtein
+
+Projet_Master1_Neural_Network.ipynb : MLP avec les ratios de disatance de Levenshtein
